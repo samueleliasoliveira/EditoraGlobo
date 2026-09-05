@@ -1,23 +1,33 @@
 import { createClient } from "@/lib/supabase/server";
+import { createServiceClient } from "@/lib/supabase/service";
 import { redirect } from "next/navigation";
 import { DashboardView } from "@/components/DashboardView";
 import { signOut } from "@/app/actions";
+import type { Database } from "@/types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+type EventRow = Database["public"]["Tables"]["events"]["Row"];
+
 export default async function DashboardPage() {
-  const supabase = createClient();
-  const { data: auth } = await supabase.auth.getUser();
+  const authSupabase = createClient();
+  const { data: auth } = await authSupabase.auth.getUser();
   if (!auth.user) return redirect("/login");
 
-  const { data: events } = await supabase
+  const service = createServiceClient();
+  const { data: eventsRaw, error } = await service
     .from("events")
-    .select("id, name, slug, status")
+    .select("id, name, slug, status, created_at")
     .order("created_at", { ascending: false })
     .limit(10);
 
-  const defaultEvent = events?.[0] ?? null;
+  if (error && typeof console !== "undefined") {
+    console.warn("[page] events query falhou:", error.message);
+  }
+
+  const events: EventRow[] = (eventsRaw ?? []) as EventRow[];
+  const defaultEvent: EventRow | null = events?.[0] ?? null;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -30,10 +40,10 @@ export default async function DashboardPage() {
             <div>
               <p className="text-sm font-bold text-slate-900">Dashboard de Vendas</p>
               <p className="text-xs text-slate-500">
-                {defaultEvent?.name ?? "Selecione um evento"} ·{" "}
+                {(defaultEvent as EventRow | null)?.name ?? "Selecione um evento"} ·{" "}
                 <span className="inline-flex items-center gap-1">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  {defaultEvent?.status ?? "N/A"}
+                  {(defaultEvent as EventRow | null)?.status ?? "N/A"}
                 </span>
               </p>
             </div>
