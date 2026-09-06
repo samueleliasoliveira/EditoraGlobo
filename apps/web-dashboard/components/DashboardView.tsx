@@ -65,10 +65,28 @@ export function DashboardView({ initialEventSlug }: Props) {
       }
     : EMPTY_SUMMARY;
 
+  const snapshotEmpty = !data?.snapshot;
   const refreshedAt = data?.refreshedAt ? new Date(data.refreshedAt) : new Date();
 
   return (
     <div className="space-y-5">
+      {snapshotEmpty ? (
+        <div className="rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 via-white to-white shadow-sm p-4 sm:p-5">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-sky-700 font-bold">
+              ⟳
+            </div>
+            <div className="flex-1">
+              <p className="font-semibold text-slate-900 text-sm sm:text-base">
+                Aguardando primeira sincronização
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Os valores abaixo aparecem assim que o agente C# enviar o primeiro snapshot consolidado para este evento.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <LastUpdateBadge generatedAt={data?.snapshot?.generated_at ?? null} refreshedAt={refreshedAt} />

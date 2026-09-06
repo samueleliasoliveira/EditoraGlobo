@@ -8,6 +8,8 @@ export type Database = {
           slug: string;
           api_token: string;
           status: string;
+          start_date: string | null;
+          end_date: string | null;
           created_at: string;
         };
         Insert: any;
