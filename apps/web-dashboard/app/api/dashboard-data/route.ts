@@ -1,21 +1,19 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient as createUserClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
-import type { ProductRankingItem } from "@/types";
+import type { Database, ProductRankingItem } from "@/types";
 
 export const revalidate = 0;
 export const dynamic = "force-dynamic";
 
-type SnapshotRow = {
-  id: string;
-  event_id: string;
-  generated_at: string | null;
-  total_sold: number;
-  orders_count: number;
-  items_count: number;
-  average_ticket: number;
-  created_at?: string | null;
-};
+type EventRow = Database["public"]["Tables"]["events"]["Row"];
+
+type SnapshotRow =
+  Database["public"]["Tables"]["consolidated_snapshots"]["Row"] & {
+    created_at?: string | null;
+  };
+
+type RankingRow = Database["public"]["Tables"]["product_rankings"]["Row"];
 
 export async function GET(_req: NextRequest) {
   try {
@@ -41,7 +39,7 @@ export async function GET(_req: NextRequest) {
       .select("id, name, slug, status")
       .order("created_at", { ascending: false });
     if (eventFilter) eventQ = eventQ.or(`slug.eq.${eventFilter},id.eq.${eventFilter}`);
-    const { data: events, error: evErr } = await eventQ.limit(1);
+    const { data: eventsRaw, error: evErr } = await eventQ.limit(1);
     if (evErr) {
       if (typeof console !== "undefined") {
         console.error("[dashboard-data] events query error:", evErr.message);
@@ -51,14 +49,15 @@ export async function GET(_req: NextRequest) {
         { status: 500 },
       );
     }
-    const event = events?.[0] ?? null;
+    const events: EventRow[] = (eventsRaw ?? []) as EventRow[];
+    const event: EventRow | null = events?.[0] ?? null;
 
     let snapshot: SnapshotRow | null = null;
     let ranking: ProductRankingItem[] = [];
 
     if (event) {
       // 3) Ultimo snapshot consolidado (ou null, NAO crasha se vazio).
-      const { data: snaps, error: snapErr } = await supabase
+      const { data: snapsRaw, error: snapErr } = await supabase
         .from("consolidated_snapshots")
         .select(
           "id, event_id, generated_at, total_sold, orders_count, items_count, average_ticket, created_at",
@@ -74,11 +73,12 @@ export async function GET(_req: NextRequest) {
           );
         }
       }
-      snapshot = (snaps?.[0] ?? null) as SnapshotRow | null;
+      const snaps: SnapshotRow[] = (snapsRaw ?? []) as SnapshotRow[];
+      snapshot = snaps?.[0] ?? null;
 
       if (snapshot) {
         // 4) Ranking de produtos (ou array vazio).
-        const { data: rows, error: rankErr } = await supabase
+        const { data: rowsRaw, error: rankErr } = await supabase
           .from("product_rankings")
           .select("rank, product_id, product_name, quantity, revenue")
           .eq("snapshot_id", snapshot.id)
@@ -91,7 +91,8 @@ export async function GET(_req: NextRequest) {
             );
           }
         }
-        ranking = (rows ?? []).map((r) => ({
+        const rows: RankingRow[] = (rowsRaw ?? []) as RankingRow[];
+        ranking = rows.map((r) => ({
           rank: Number(r.rank) || 0,
           productId: String(r.product_id),
           productName: String(r.product_name),
