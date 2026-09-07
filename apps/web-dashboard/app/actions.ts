@@ -1,122 +1,115 @@
 "use server";
 
-import { cookies } from "next/headers";
-import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 
-function getSupabaseEnv() {
-  const url =
-    process.env.NEXT_PUBLIC_SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonOrPublishable =
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  return { url, anonOrPublishable };
-}
+function safeErrMessage(raw: unknown, fallback: string): string {
+  try {
+    if (!raw) return fallback;
+    let msg: string;
+    if (typeof raw === "string") msg = raw;
+    else if (typeof raw === "object" && "message" in (raw as any))
+      msg = String((raw as any).message ?? "");
+    else msg = String(raw);
 
-function makeClientForServerAction() {
-  const cookieStore = cookies();
-  const { url, anonOrPublishable } = getSupabaseEnv();
-  if (!url || !anonOrPublishable) {
-    if (typeof console !== "undefined") {
-      console.error(
-        "[actions] Variaveis Supabase ausentes. URL=" +
-          (url ? "ok" : "faltando NEXT_PUBLIC_SUPABASE_URL") +
-          " KEY=" +
-          (anonOrPublishable
-            ? "ok"
-            : "faltando NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ou NEXT_PUBLIC_SUPABASE_ANON_KEY"),
-      );
-    }
-    return null;
+    // Filtrar (heurística) o que PODE ser secret/token/JWT — evitar vazar.
+    msg = msg
+      .replace(/\bey[A-Za-z0-9_-]{20,}\b/g, "[REDACTED_JWT]")
+      .replace(/\bsk-[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_SK]")
+      .replace(/\bghp_[A-Za-z0-9]{20,}\b/g, "[REDACTED_PAT]")
+      .replace(/\b(api[_-]?token|secret|service[_-]?role[_-]?key)\s*[=:]\s*\S+/gi, "$1=[REDACTED]");
+
+    if (!msg.trim()) return fallback;
+    return msg.slice(0, 300);
+  } catch {
+    return fallback;
   }
-  return createServerClient(url, anonOrPublishable, {
-    cookies: {
-      get(name: string) {
-        return cookieStore.get(name)?.value;
-      },
-      set(name: string, value: string, options: CookieOptions) {
-        try {
-          cookieStore.set({ name, value, ...options });
-        } catch {}
-      },
-      remove(name: string, options: CookieOptions) {
-        try {
-          cookieStore.set({ name, value: "", ...options });
-        } catch {}
-      },
-    },
-  });
 }
 
 export async function signIn(formData: FormData) {
+  const email = String(formData.get("email") ?? "").trim();
+  const password = String(formData.get("password") ?? "");
+  const nextRaw = String(formData.get("next") ?? "/");
+  const next = nextRaw.startsWith("/") ? nextRaw : "/";
+  const fallbackError =
+    "Falha temporária ao autenticar. Tente novamente em alguns segundos.";
+
+  if (!email || !password) {
+    return redirect(
+      `/login?error=${encodeURIComponent("Informe e-mail e senha.")}&next=${encodeURIComponent(next)}`,
+    );
+  }
+
+  let supabase: ReturnType<typeof createClient>;
   try {
-    const email = String(formData.get("email") ?? "").trim();
-    const password = String(formData.get("password") ?? "");
-    const nextRaw = String(formData.get("next") ?? "/");
-    const next = nextRaw.startsWith("/") ? nextRaw : "/";
+    supabase = createClient();
+  } catch (clientErr: any) {
+    const msg = safeErrMessage(
+      clientErr,
+      "Configuração pendente. Verifique NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (ou ANON_KEY) nas variáveis de ambiente.",
+    );
+    return redirect(
+      `/login?error=${encodeURIComponent(msg)}&next=${encodeURIComponent(next)}`,
+    );
+  }
 
-    if (!email || !password) {
-      return redirect(
-        `/login?error=${encodeURIComponent("Informe e-mail e senha.")}&next=${encodeURIComponent(next)}`,
-      );
-    }
-
-    const supabase = makeClientForServerAction();
-    if (!supabase) {
-      return redirect(
-        `/login?error=${encodeURIComponent("Configuração pendente. Verifique NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (ou ANON_KEY) nas variáveis de ambiente da Vercel.")}&next=${encodeURIComponent(next)}`,
-      );
-    }
-
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) {
-      const msg =
-        error?.message?.toLowerCase?.()?.includes("invalid") ||
-        error?.message?.toLowerCase?.()?.includes("credentials")
+  try {
+    // signInWithPassword PODE lançar em cenários de URL/key inválidas
+    // (não é garantido que sempre retorne { error }).
+    const result = await supabase.auth.signInWithPassword({ email, password });
+    if (result?.error) {
+      const msgRaw = result.error.message ?? "";
+      const low = msgRaw.toLowerCase();
+      const friendly =
+        low.includes("invalid") ||
+        low.includes("credentials") ||
+        low.includes("password") ||
+        low.includes("email")
           ? "E-mail ou senha inválidos."
-          : error?.message ?? "Não foi possível entrar agora.";
+          : safeErrMessage(result.error, fallbackError);
       return redirect(
-        `/login?error=${encodeURIComponent(msg)}&next=${encodeURIComponent(next)}`,
+        `/login?error=${encodeURIComponent(friendly)}&next=${encodeURIComponent(next)}`,
       );
     }
     return redirect(next);
   } catch (topErr: any) {
+    // Aqui está o caminho que estava sendo pego (Digest 425477614 e mensagem generica).
+    // Agora mostramos a mensagem REAL, filtrada contra secrets.
     if (typeof console !== "undefined") {
       console.error(
-        "[actions] signIn top-level exception:",
-        topErr?.message ?? String(topErr),
+        "[actions] signIn exception (throw em auth/signInWithPassword?):",
+        safeErrMessage(topErr, "n/a"),
       );
     }
+    const msg = safeErrMessage(topErr, fallbackError);
     return redirect(
-      `/login?error=${encodeURIComponent("Falha temporária ao autenticar. Tente novamente em alguns segundos.")}&next=${encodeURIComponent("%2F")}`,
+      `/login?error=${encodeURIComponent(msg)}&next=${encodeURIComponent(next)}`,
     );
   }
 }
 
 export async function signOut() {
+  const next = "/login";
   try {
-    const supabase = makeClientForServerAction();
-    if (supabase) {
-      try {
-        await supabase.auth.signOut();
-      } catch (inner: any) {
-        if (typeof console !== "undefined") {
-          console.warn(
-            "[actions] signOut auth.signOut falhou:",
-            inner?.message ?? String(inner),
-          );
-        }
+    const supabase = createClient();
+    try {
+      await supabase.auth.signOut();
+    } catch (inner: any) {
+      if (typeof console !== "undefined") {
+        console.warn(
+          "[actions] signOut auth.signOut falhou:",
+          safeErrMessage(inner, "n/a"),
+        );
       }
     }
-  } catch (topErr: any) {
+  } catch (outer: any) {
     if (typeof console !== "undefined") {
       console.warn(
-        "[actions] signOut top-level exception:",
-        topErr?.message ?? String(topErr),
+        "[actions] signOut createClient falhou:",
+        safeErrMessage(outer, "n/a"),
       );
     }
   } finally {
-    redirect("/login");
+    redirect(next);
   }
 }
